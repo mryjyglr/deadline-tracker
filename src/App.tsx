@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { supabase } from "./lib/supabaseClient";
 
 type Priority = "Low" | "Medium" | "High";
 type AssignmentStatus = "Pending" | "Completed" | "Overdue";
@@ -107,65 +108,38 @@ function Icon({
   );
 }
 
-const STORAGE_KEY = "studytrack-assignments-v1";
 const todayIso = () => new Date().toISOString().slice(0, 10);
-const shiftDate = (days: number) => {
-  const date = new Date();
-  date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
+
+type AssignmentRow = {
+  id: string;
+  title: string;
+  subject: string;
+  description: string | null;
+  date_added: string;
+  deadline: string;
+  priority: Priority;
+  completed_at: string | null;
 };
 
-const sampleAssignments = (): Assignment[] => [
-  {
-    id: "sample-1",
-    title: "Research Paper Outline",
-    subject: "English Literature",
-    description:
-      "Prepare a structured outline with a thesis statement, three supporting arguments, and at least five academic sources.",
-    dateAdded: shiftDate(-3),
-    deadline: shiftDate(2),
-    priority: "High",
-  },
-  {
-    id: "sample-2",
-    title: "Trigonometry Problem Set",
-    subject: "Mathematics",
-    description: "Complete exercises 1–25 from Chapter 8. Show all working and submit as one PDF.",
-    dateAdded: shiftDate(-2),
-    deadline: shiftDate(5),
-    priority: "Medium",
-  },
-  {
-    id: "sample-3",
-    title: "Cell Structure Lab Report",
-    subject: "Biology",
-    description:
-      "Write the lab report using the provided template and include the microscope observation diagram.",
-    dateAdded: shiftDate(-9),
-    deadline: shiftDate(-1),
-    priority: "High",
-  },
-  {
-    id: "sample-4",
-    title: "Industrial Revolution Timeline",
-    subject: "World History",
-    description:
-      "Create a timeline of twelve major events and add a short explanation for each milestone.",
-    dateAdded: shiftDate(-10),
-    deadline: shiftDate(-3),
-    priority: "Low",
-    completedAt: shiftDate(-4),
-  },
-  {
-    id: "sample-5",
-    title: "Reading Reflection",
-    subject: "English Literature",
-    description: "Write a 500-word reflection on the assigned short story.",
-    dateAdded: todayIso(),
-    deadline: todayIso(),
-    priority: "Medium",
-  },
-];
+const fromRow = (row: AssignmentRow): Assignment => ({
+  id: row.id,
+  title: row.title,
+  subject: row.subject,
+  description: row.description ?? "",
+  dateAdded: row.date_added,
+  deadline: row.deadline,
+  priority: row.priority,
+  completedAt: row.completed_at ?? undefined,
+});
+
+const toRow = (values: Omit<Assignment, "id" | "completedAt">) => ({
+  title: values.title,
+  subject: values.subject,
+  description: values.description,
+  date_added: values.dateAdded,
+  deadline: values.deadline,
+  priority: values.priority,
+});
 
 const emptyForm = (): Omit<Assignment, "id" | "completedAt"> => ({
   title: "",
@@ -218,14 +192,7 @@ function StatusBadge({ status }: { status: AssignmentStatus }) {
 }
 
 function App() {
-  const [assignments, setAssignments] = useState<Assignment[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      return saved ? JSON.parse(saved) : sampleAssignments();
-    } catch {
-      return sampleAssignments();
-    }
-  });
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"All" | AssignmentStatus>("All");
   const [subjectFilter, setSubjectFilter] = useState("All");
@@ -237,9 +204,22 @@ function App() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [deleteTarget, setDeleteTarget] = useState<Assignment | null>(null);
 
+  const loadAssignments = async () => {
+    const { data, error } = await supabase
+      .from("assignments")
+      .select("*")
+      .order("deadline", { ascending: true });
+    if (error) {
+      console.error(error);
+      alert("Could not load assignments: " + error.message);
+      return;
+    }
+    setAssignments((data as AssignmentRow[]).map(fromRow));
+  };
+
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(assignments));
-  }, [assignments]);
+    loadAssignments();
+  }, []);
 
   useEffect(() => {
     if (!modal && !deleteTarget) return;
@@ -325,23 +305,48 @@ function App() {
     return Object.keys(nextErrors).length === 0;
   };
 
-  const saveAssignment = (event: React.FormEvent) => {
+  // FIXED: added `async` so `await` works inside this function
+  const saveAssignment = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!validate()) return;
-    if (editingId) {
-      setAssignments((current) =>
-        current.map((item) => (item.id === editingId ? { ...item, ...form } : item)),
-      );
-    } else {
-      setAssignments((current) => [{ ...form, id: crypto.randomUUID() }, ...current]);
+    const { error } = editingId
+      ? await supabase.from("assignments").update(toRow(form)).eq("id", editingId)
+      : await supabase.from("assignments").insert(toRow(form));
+    if (error) {
+      console.error(error);
+      alert("Failed to save: " + error.message);
+      return;
     }
     setModal(null);
+    loadAssignments();
   };
 
-  const markCompleted = (id: string) => {
-    setAssignments((current) =>
-      current.map((item) => (item.id === id ? { ...item, completedAt: todayIso() } : item)),
-    );
+  const markCompleted = async (id: string) => {
+    const { error } = await supabase
+      .from("assignments")
+      .update({ completed_at: todayIso() })
+      .eq("id", id);
+    if (error) {
+      console.error(error);
+      alert("Failed to update: " + error.message);
+      return;
+    }
+    loadAssignments();
+  };
+
+  const deleteAssignment = async () => {
+    if (!deleteTarget) return;
+    const { error } = await supabase
+      .from("assignments")
+      .delete()
+      .eq("id", deleteTarget.id);
+    if (error) {
+      console.error(error);
+      alert("Failed to delete: " + error.message);
+      return;
+    }
+    setDeleteTarget(null);
+    loadAssignments();
   };
 
   const clearFilters = () => {
@@ -882,12 +887,7 @@ function App() {
                 Cancel
               </button>
               <button
-                onClick={() => {
-                  setAssignments((current) =>
-                    current.filter((item) => item.id !== deleteTarget.id),
-                  );
-                  setDeleteTarget(null);
-                }}
+                onClick={deleteAssignment}
                 className="inline-flex h-10 items-center rounded-lg bg-[#936269] px-4 text-sm font-semibold text-white transition hover:bg-[#7E5359]"
               >
                 Delete
