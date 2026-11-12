@@ -1,0 +1,10 @@
+{
+  "description": "Helps students organize assignments, track deadlines, and monitor progress with searchable task lists, reminders, and clear academic status summaries.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
